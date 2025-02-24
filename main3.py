@@ -41,6 +41,10 @@ test_df["DateTimeOfAccident"] = pd.to_datetime(test_df["DateTimeOfAccident"])
 test_df["DateReported"] = pd.to_datetime(test_df["DateReported"])
 test_df["ReportDelay"] = (test_df["DateReported"] - test_df["DateTimeOfAccident"]).dt.days
 
+print(train_df.head())
+
+#%%
+
 # **🔹 Compute Season Feature**
 def get_season(date):
     month = date.month
@@ -58,6 +62,9 @@ for col in categorical_features:
     train_df[col] = train_df[col].astype("category").cat.add_categories(["Unknown"]).fillna("Unknown")
     test_df[col] = test_df[col].astype("category").cat.add_categories(["Unknown"]).fillna("Unknown")
 
+print(train_df.head())
+
+#%%
 # **🔹 NLP Processing for ClaimDescription**
 vectorizer = TfidfVectorizer(max_features=100)
 train_text_features = vectorizer.fit_transform(train_df["ClaimDescription"].astype(str)).toarray()
@@ -91,47 +98,6 @@ X_train_final, X_val, y_train_final, y_val = train_test_split(
     X_train_scaled, y_train, test_size=0.2, random_state=42
 )
 
-# **🔹 Train XGBoost Model (With Early Stopping & Weight Decay)**
-xgb_model = XGBRegressor(
-    n_estimators=300,
-    learning_rate=0.05,
-    max_depth=6,
-    eval_metric="rmse",
-    reg_lambda=1.0  # L2 Regularization (Weight Decay)
-)
-
-# ** Train with Early Stopping **
-xgb_model.fit(
-    X_train_final, y_train_final,
-    eval_set=[(X_val, y_val)],  # Validation set for early stopping
-    verbose=50
-)
-
-y_pred_xgb = xgb_model.predict(X_test_scaled)
-
-# **🔹 Train CatBoost Model (With Early Stopping & Weight Decay)**
-cat_model = CatBoostRegressor(
-    iterations=300, learning_rate=0.05, depth=6, verbose=50,
-    eval_metric='RMSE', early_stopping_rounds=140,
-    l2_leaf_reg=3.0  # L2 Regularization
-)
-cat_model.fit(X_train_final, y_train_final, eval_set=[(X_val, y_val)])
-y_pred_cat = cat_model.predict(X_test_scaled)
-
-# **🔹 Train LightGBM Model (With Early Stopping & Weight Decay)**
-lgb_model = LGBMRegressor(
-    n_estimators=300, learning_rate=0.05, max_depth=6,
-    reg_lambda=1.0  # L2 Regularization (Weight Decay)
-)
-
-lgb_model.fit(
-    X_train_final, y_train_final,
-    eval_set=[(X_val, y_val)],
-    eval_metric='rmse',
-    callbacks=[early_stopping(stopping_rounds=20, verbose=True)]  
-)
-
-y_pred_lgb = lgb_model.predict(X_test_scaled)
 
 # **🔹 Train Generalized Linear Model (GLM)**
 glm_model = TweedieRegressor(power=1.5, alpha=0.5, max_iter=1000)
@@ -150,20 +116,6 @@ nn_model = Sequential([
 
 nn_model.compile(optimizer='adam', loss='mse')
 early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-
-history = nn_model.fit(
-     X_train_final, y_train_final,
-     validation_data=(X_val, y_val),
-     epochs=100, batch_size=32, verbose=1,
-     callbacks=[early_stop]
- )
-
-y_pred_nn = nn_model.predict(X_test_scaled).flatten()
-
-# **🔹 Advanced Ensemble Model (Average of all Predictions)**
-y_pred_ensemble = (y_pred_xgb + y_pred_cat + y_pred_lgb + y_pred_glm + y_pred_nn) / 5
-test_df["PredictedClaimCost_Ensemble"] = y_pred_ensemble
-test_df[["ClaimNumber", "PredictedClaimCost_Ensemble"]].to_csv("ensemble_predictions.csv", index=False)
 
 print("✅ Ensemble Model Training Complete & Predictions Saved!")
 #%%
@@ -226,9 +178,7 @@ def evaluate_model(y_true, y_pred, model_name):
     print(f"R² Score: {r2:.2f}")
 
 # **🔹 Evaluate Each Model**
-evaluate_model(y_val, xgb_model.predict(X_val), "XGBoost")
-evaluate_model(y_val, cat_model.predict(X_val), "CatBoost")
-evaluate_model(y_val, lgb_model.predict(X_val), "LightGBM")
+
 evaluate_model(y_val, glm_model.predict(X_val), "GLM")
 evaluate_model(y_val, nn_model.predict(X_val).flatten(), "Neural Network")
 #evaluate_model(y_val, y_pred_ensemble, "Ensemble Model")

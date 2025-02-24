@@ -1,0 +1,235 @@
+---
+output:
+  reprex::reprex_document:
+    venue: "gh"
+    advertise: FALSE
+    session_info: TRUE
+    style: TRUE
+    comment: "#;-)"
+    tidyverse_quiet: FALSE
+    std_out_err: TRUE
+knit: reprex::reprex_render
+---
+---
+title: "Workers' Compensation Loss-Cost EDA"
+author: "Your Name"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+
+```{r load-data, echo=FALSE}
+# Load necessary libraries
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+
+```
+
+
+```{r load-data, echo=FALSE}
+# Load dataset (Modify path if loading from a CSV)
+train_df <- read.csv("train.csv", stringsAsFactors = FALSE)
+test_df <- read.csv("test.csv", stringsAsFactors = FALSE)
+
+
+# Convert dates to Date format
+train_df$DateTimeOfAccident <- as.Date(train_df$DateTimeOfAccident)
+test_df$DateTimeOfAccident <- as.Date(test_df$DateTimeOfAccident)
+
+train_df$DateReported <- as.Date(train_df$DateReported)
+test_df$DateReported <- as.Date(test_df$DateReported)
+```     
+
+```{r, ECHO = FALSE}
+
+cat("Number of Rows in test_df:", nrow(test_df), "\n")
+colnames(test_df)
+
+
+```
+
+
+There needs to be a Earned Premium column 
+
+```{r create-synthetic-data, echo=FALSE}
+set.seed(42)  # Ensure reproducibility
+library(dplyr)
+
+#Standardize Column Names
+if ("InitialIncurredCalimsCost" %in% colnames(test_df)) {
+  test_df <- test_df %>%
+    rename(UltimateIncurredClaimCost = InitialIncurredCalimsCost)
+}
+
+#Function to Generate Earned Premiums & Loss Ratio
+generate_synthetic_data <- function(df) {
+  df <- df %>% filter(!is.na(WeeklyWages) & WeeklyWages > 0)
+
+  # Generate synthetic Earned Premiums
+  df$EarnedPremiums <- df$WeeklyWages * sample(seq(40, 60, by=5), nrow(df), replace=TRUE)
+
+  # Compute Loss Ratio safely
+  df$LossRatio <- df$UltimateIncurredClaimCost / df$EarnedPremiums
+
+  return(df)
+}
+
+#Apply function to both train and test sets
+train_df <- generate_synthetic_data(train_df)
+test_df <- generate_synthetic_data(test_df)
+
+#Print preview
+head(train_df[, c("UltimateIncurredClaimCost", "EarnedPremiums", "LossRatio")])
+head(test_df[, c("UltimateIncurredClaimCost", "EarnedPremiums", "LossRatio")])
+
+```
+
+```{r data creation check, echo = FALSE}
+# Check if EarnedPremiums is missing or zero in test_df
+cat("Missing EarnedPremiums in Test Set: ", sum(is.na(test_df$EarnedPremiums)), "\n")
+cat("Zero EarnedPremiums in Test Set: ", sum(test_df$EarnedPremiums == 0, na.rm = TRUE), "\n")
+
+# If EarnedPremiums is missing, re-run synthetic data generation
+if (sum(is.na(test_df$EarnedPremiums)) > 0 | sum(test_df$EarnedPremiums == 0, na.rm = TRUE) > 0) {
+  test_df <- generate_synthetic_data(test_df)
+}
+
+# Ensure LossRatio does not contain NA or Inf
+test_df <- test_df %>%
+  mutate(LossRatio = ifelse(is.finite(LossRatio), LossRatio, NA)) %>% 
+  drop_na(LossRatio)
+
+# Re-check missing values
+cat("Final Missing LossRatio in Test Set: ", sum(is.na(test_df$LossRatio)), "\n")
+
+
+```
+
+
+```{r check loss ratio, ECHO = FALSE}
+
+summary(train_df$LossRatio)
+summary(test_df$LossRatio)
+
+# Check if all values are zeros or very small
+cat("Unique values in train_df$LossRatio:", length(unique(train_df$LossRatio)), "\n")
+cat("Unique values in test_df$LossRatio:", length(unique(test_df$LossRatio)), "\n")
+
+# Ensure LossRatio is numeric
+train_df$LossRatio <- as.numeric(train_df$LossRatio)
+test_df$LossRatio <- as.numeric(test_df$LossRatio)
+
+
+```
+
+
+```{r check loss ratio distribution, echo = FALSE}
+
+train_df$LossRatio_log <- log1p(train_df$LossRatio)  # log(1 + LossRatio) to avoid log(0)
+test_df$LossRatio_log <- log1p(test_df$LossRatio)
+
+ggplot(train_df, aes(x = LossRatio_log)) +
+  geom_histogram(bins = 30, fill = "blue", alpha = 0.6) +
+  ggtitle("Log-Transformed Loss Ratio (Train Set)") +
+  xlab("log(1 + Loss Ratio)") +
+  ylab("Frequency") +
+  theme_minimal()
+
+ggplot(test_df, aes(x = LossRatio_log)) +
+  geom_histogram(bins = 30, fill = "blue", alpha = 0.6) +
+  ggtitle("Log-Transformed Loss Ratio (Train Set)") +
+  xlab("log(1 + Loss Ratio)") +
+  ylab("Frequency") +
+  theme_minimal()
+
+```
+
+
+The distribution has a right skew, I will be using a gamma regression. 
+
+```{r check for missing values, echo = FALSE}
+
+# Check for missing values
+missing_values <- colSums(is.na(train_df))
+missing_values
+
+
+```
+
+ There are no missing values 
+```{r, echo =FALSE}
+
+colnames(train_set)
+
+
+```
+
+```{r split-data, echo=FALSE}
+set.seed(42)  # Ensure reproducibility
+library(caret) # For data splitting
+
+# Define 80% train, 20% validation split
+train_index <- createDataPartition(train_df$LossRatio, p=0.8, list=FALSE)
+
+# Create train and validation sets
+train_set <- train_df[train_index, ]
+validation_set <- train_df[-train_index, ]
+
+# Print dataset sizes
+cat("Training Set Size: ", nrow(train_set), "\n")
+cat("Validation Set Size: ", nrow(validation_set), "\n")
+cat("Test Set Size: ", nrow(test_df), "\n")
+
+
+```
+
+
+```{r install dependencies, echo=FALSE}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("flexplot")
+
+
+```
+
+```{r gamma regression, echo = FALSE}
+
+
+install.packages("devtools")  # Install devtools if not installed
+devtools::install_github("dustinfife/flexplot")
+library(flexplot)
+
+```
+
+install.packages("flexplot")  # Run this once if not installed
+library(flexplot)
+
+```
+
+Before fitting the model, visualize the relationships between LossRatio and predictors.
+
+```{r flexplot-univariate, echo=FALSE}
+
+flexplot(LossRatio ~ 1, data=train_set)
+
+
+```
+
+```{r flexplot-bivariate, echo=FALSE}
+# Bivariate plot: Loss Ratio vs. Weekly Wages
+flexplot(LossRatio ~ WeeklyWages, data=train_set, method="Gamma", jitter=c(0, 0.2))
+
+```
+
+```{r gamma-models, echo=FALSE}
+# Full Gamma Model
+full_gamma <- glm(LossRatio ~ WeeklyWages + ReportDelay + AccidentSeason + MaritalStatus + Gender, 
+                  data=train_set, family=Gamma(link="log"))
+
+# Reduced Gamma Model (removing non-significant predictors)
+reduced_gamma <- glm(LossRatio ~ WeeklyWages + ReportDelay, 
+                     data=train_set, family=Gamma(link="log"))
+```
+
