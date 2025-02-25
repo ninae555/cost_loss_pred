@@ -123,7 +123,22 @@ test_df$LossRatio <- as.numeric(test_df$LossRatio)
 
 
 ```
+```{r add-report-delay, echo=FALSE}
+# Ensure both columns are in date format
+train_set$DateTimeOfAccident <- as.Date(train_set$DateTimeOfAccident)
+train_set$DateReported <- as.Date(train_set$DateReported)
 
+test_df$DateTimeOfAccident <- as.Date(test_df$DateTimeOfAccident)
+test_df$DateReported <- as.Date(test_df$DateReported)
+
+# Compute Report Delay (Days between accident and report)
+train_set$ReportDelay <- as.numeric(difftime(train_set$DateReported, train_set$DateTimeOfAccident, units="days"))
+test_df$ReportDelay <- as.numeric(difftime(test_df$DateReported, test_df$DateTimeOfAccident, units="days"))
+
+# Verify it’s added
+colnames(train_set)
+head(train_set$ReportDelay)
+```
 
 ```{r check loss ratio distribution, echo = FALSE}
 
@@ -184,7 +199,30 @@ cat("Test Set Size: ", nrow(test_df), "\n")
 
 
 ```
+```{r create-accident-season, echo=FALSE}
+train_set$AccidentSeason <- case_when(
+  month(train_set$DateTimeOfAccident) %in% c(12, 1, 2) ~ "Winter",
+  month(train_set$DateTimeOfAccident) %in% c(3, 4, 5)  ~ "Spring",
+  month(train_set$DateTimeOfAccident) %in% c(6, 7, 8)  ~ "Summer",
+  month(train_set$DateTimeOfAccident) %in% c(9, 10, 11) ~ "Fall",
+  TRUE ~ NA_character_
+)
 
+test_df$AccidentSeason <- case_when(
+  month(test_df$DateTimeOfAccident) %in% c(12, 1, 2) ~ "Winter",
+  month(test_df$DateTimeOfAccident) %in% c(3, 4, 5)  ~ "Spring",
+  month(test_df$DateTimeOfAccident) %in% c(6, 7, 8)  ~ "Summer",
+  month(test_df$DateTimeOfAccident) %in% c(9, 10, 11) ~ "Fall",
+  TRUE ~ NA_character_
+)
+
+# Convert to categorical (factor)
+train_set$AccidentSeason <- as.factor(train_set$AccidentSeason)
+test_df$AccidentSeason <- as.factor(test_df$AccidentSeason)
+
+# Verify the column was created
+table(train_set$AccidentSeason)
+```
 
 ```{r install dependencies, echo=FALSE}
 if (!requireNamespace("BiocManager", quietly = TRUE))
@@ -223,6 +261,23 @@ flexplot(LossRatio ~ WeeklyWages, data=train_set, method="Gamma", jitter=c(0, 0.
 
 ```
 
+```{r, echo = FALSE}
+summary(train_set$LossRatio)
+hist(train_set$LossRatio, breaks=30, main="Loss Ratio Distribution")
+
+cap_value <- quantile(train_set$LossRatio, 0.99, na.rm=TRUE)
+train_set$LossRatio <- pmin(train_set$LossRatio, cap_value)
+test_df$LossRatio <- pmin(test_df$LossRatio, cap_value)
+
+train_set$WeeklyWages_log <- log1p(train_set$WeeklyWages)
+train_set$ReportDelay_log <- log1p(train_set$ReportDelay)
+
+test_df$WeeklyWages_log <- log1p(test_df$WeeklyWages)
+test_df$ReportDelay_log <- log1p(test_df$ReportDelay)
+
+```
+
+
 ```{r gamma-models, echo=FALSE}
 # Full Gamma Model
 full_gamma <- glm(LossRatio ~ WeeklyWages + ReportDelay + AccidentSeason + MaritalStatus + Gender, 
@@ -231,5 +286,24 @@ full_gamma <- glm(LossRatio ~ WeeklyWages + ReportDelay + AccidentSeason + Marit
 # Reduced Gamma Model (removing non-significant predictors)
 reduced_gamma <- glm(LossRatio ~ WeeklyWages + ReportDelay, 
                      data=train_set, family=Gamma(link="log"))
+```
+
+
+
+```{r tweedie-model, echo=FALSE}
+install.packages("statmod")  # Run this once
+library(statmod)
+
+
+# Fit a Tweedie GLM
+tweedie_model <- glm(LossRatio ~ WeeklyWages + ReportDelay + AccidentSeason + MaritalStatus, 
+                     data=train_set, 
+                     family=tweedie(var.power=1.5, link.power=0))
+
+
+summary(tweedie_model)
+
+
+
 ```
 
