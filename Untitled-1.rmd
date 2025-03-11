@@ -20,6 +20,10 @@ output: html_document
 
 
 ```{r load-data, echo=FALSE}
+
+#install.packages("httpgd", dependencies = TRUE)
+
+
 # Load necessary libraries
 library(tidyverse)
 library(lubridate)
@@ -123,46 +127,90 @@ test_df$LossRatio <- as.numeric(test_df$LossRatio)
 
 
 ```
+
+There is a high right skew. 
+
+
 ```{r add-report-delay, echo=FALSE}
 # Ensure both columns are in date format
-train_set$DateTimeOfAccident <- as.Date(train_set$DateTimeOfAccident)
-train_set$DateReported <- as.Date(train_set$DateReported)
+train_df$DateTimeOfAccident <- as.Date(train_df$DateTimeOfAccident)
+train_df$DateReported <- as.Date(train_df$DateReported)
 
 test_df$DateTimeOfAccident <- as.Date(test_df$DateTimeOfAccident)
 test_df$DateReported <- as.Date(test_df$DateReported)
 
 # Compute Report Delay (Days between accident and report)
-train_set$ReportDelay <- as.numeric(difftime(train_set$DateReported, train_set$DateTimeOfAccident, units="days"))
+train_df$ReportDelay <- as.numeric(difftime(train_df$DateReported, train_df$DateTimeOfAccident, units="days"))
 test_df$ReportDelay <- as.numeric(difftime(test_df$DateReported, test_df$DateTimeOfAccident, units="days"))
 
 # Verify it’s added
-colnames(train_set)
-head(train_set$ReportDelay)
+colnames(train_df)
+head(train_df$ReportDelay)
 ```
 
-```{r check loss ratio distribution, echo = FALSE}
+```{r create-accident-season, echo=FALSE}
+train_df$AccidentSeason <- case_when(
+  month(train_df$DateTimeOfAccident) %in% c(12, 1, 2) ~ "Winter",
+  month(train_df$DateTimeOfAccident) %in% c(3, 4, 5)  ~ "Spring",
+  month(train_df$DateTimeOfAccident) %in% c(6, 7, 8)  ~ "Summer",
+  month(train_df$DateTimeOfAccident) %in% c(9, 10, 11) ~ "Fall",
+  TRUE ~ NA_character_
+)
 
+test_df$AccidentSeason <- case_when(
+  month(test_df$DateTimeOfAccident) %in% c(12, 1, 2) ~ "Winter",
+  month(test_df$DateTimeOfAccident) %in% c(3, 4, 5)  ~ "Spring",
+  month(test_df$DateTimeOfAccident) %in% c(6, 7, 8)  ~ "Summer",
+  month(test_df$DateTimeOfAccident) %in% c(9, 10, 11) ~ "Fall",
+  TRUE ~ NA_character_
+)
+
+# Convert to categorical (factor)
+train_df$AccidentSeason <- as.factor(train_df$AccidentSeason)
+test_df$AccidentSeason <- as.factor(test_df$AccidentSeason)
+
+# Verify the column was created
+table(train_df$AccidentSeason)
+```
+
+```{r check loss ratio zeros, echo = FALSE}
+
+num_zeros <- sum(train_df$LossRatio == 0)
+print(num_zeros)
+````
+
+
+To handle the right-skew of the Loss Ratio, I will apply a log transformation to compress the large values and spread out small values. Now the data will be more normally distributed. 
+
+```{r check loss ratio distribution, echo = FALSE, fig.show="hold"}
+# Check the distribution of Loss Ratio
 train_df$LossRatio_log <- log1p(train_df$LossRatio)  # log(1 + LossRatio) to avoid log(0)
 test_df$LossRatio_log <- log1p(test_df$LossRatio)
 
-ggplot(train_df, aes(x = LossRatio_log)) +
-  geom_histogram(bins = 30, fill = "blue", alpha = 0.6) +
-  ggtitle("Log-Transformed Loss Ratio (Train Set)") +
-  xlab("log(1 + Loss Ratio)") +
-  ylab("Frequency") +
-  theme_minimal()
+print(
+  ggplot(train_df, aes(x = LossRatio_log)) +
+    geom_histogram(bins = 30, fill = "blue", alpha = 0.6) +
+    ggtitle("Log-Transformed Loss Ratio (Train Set)") +
+    xlab("log(1 + Loss Ratio)") +
+    ylab("Frequency") +
+    theme_minimal()
+)
 
-ggplot(test_df, aes(x = LossRatio_log)) +
-  geom_histogram(bins = 30, fill = "blue", alpha = 0.6) +
-  ggtitle("Log-Transformed Loss Ratio (Train Set)") +
-  xlab("log(1 + Loss Ratio)") +
-  ylab("Frequency") +
-  theme_minimal()
+print(
+  ggplot(test_df, aes(x = LossRatio_log)) +
+    geom_histogram(bins = 30, fill = "blue", alpha = 0.6) +
+    ggtitle("Log-Transformed Loss Ratio (Test Set)") +
+    xlab("log(1 + Loss Ratio)") +
+    ylab("Frequency") +
+    theme_minimal()
+)
+
+
 
 ```
 
 
-The distribution has a right skew, I will be using a gamma regression. 
+The distribution has a right skew, I will be using a tweedie regression. 
 
 ```{r check for missing values, echo = FALSE}
 
@@ -176,133 +224,570 @@ missing_values
  There are no missing values 
 ```{r, echo =FALSE}
 
-colnames(train_set)
+colnames(train_df)
+str(train_df)  # Check structure of dataset
 
 
 ```
 
-```{r split-data, echo=FALSE}
-set.seed(42)  # Ensure reproducibility
-library(caret) # For data splitting
+```{r, echo =FALSE}
 
-# Define 80% train, 20% validation split
-train_index <- createDataPartition(train_df$LossRatio, p=0.8, list=FALSE)
-
-# Create train and validation sets
-train_set <- train_df[train_index, ]
-validation_set <- train_df[-train_index, ]
-
-# Print dataset sizes
-cat("Training Set Size: ", nrow(train_set), "\n")
-cat("Validation Set Size: ", nrow(validation_set), "\n")
-cat("Test Set Size: ", nrow(test_df), "\n")
-
-
-```
-```{r create-accident-season, echo=FALSE}
-train_set$AccidentSeason <- case_when(
-  month(train_set$DateTimeOfAccident) %in% c(12, 1, 2) ~ "Winter",
-  month(train_set$DateTimeOfAccident) %in% c(3, 4, 5)  ~ "Spring",
-  month(train_set$DateTimeOfAccident) %in% c(6, 7, 8)  ~ "Summer",
-  month(train_set$DateTimeOfAccident) %in% c(9, 10, 11) ~ "Fall",
-  TRUE ~ NA_character_
-)
-
-test_df$AccidentSeason <- case_when(
-  month(test_df$DateTimeOfAccident) %in% c(12, 1, 2) ~ "Winter",
-  month(test_df$DateTimeOfAccident) %in% c(3, 4, 5)  ~ "Spring",
-  month(test_df$DateTimeOfAccident) %in% c(6, 7, 8)  ~ "Summer",
-  month(test_df$DateTimeOfAccident) %in% c(9, 10, 11) ~ "Fall",
-  TRUE ~ NA_character_
-)
-
-# Convert to categorical (factor)
-train_set$AccidentSeason <- as.factor(train_set$AccidentSeason)
-test_df$AccidentSeason <- as.factor(test_df$AccidentSeason)
-
-# Verify the column was created
-table(train_set$AccidentSeason)
+install.packages("caret", type = "binary")
+library(caret)  # Load caret
 ```
 
-```{r install dependencies, echo=FALSE}
-if (!requireNamespace("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-BiocManager::install("flexplot")
+
+```{r, echo =FALSE}
+dmy <- dummyVars("~ Gender", data = train_df)
+train_df_dmy <- data.frame(predict(dmy, newdata = train_df))
+
+# Print column names
+print(colnames(train_df_dmy))
+```
+
+```{r, echo =FALSE}
+colnames(train_df_dmy) <- c("Gender_Female", "Gender_Male", "Gender_Unknown")
+
+train_df <- cbind(train_df, train_df_dmy)
+str(train_df)  # Check structure of dataset
+
+'Gender_Female' %in% names(train_df)
+```
+
+```{r, echo =FALSE}
+
+dmy <- dummyVars("~ MaritalStatus", data = train_df)
+train_df_dmy <- data.frame(predict(dmy, newdata = train_df))
+
+# Print column names
+print(colnames(train_df_dmy))
+
+```
+```{r, echo =FALSE}
+colnames(train_df_dmy) <- gsub("^MaritalStatus", "Marital_", colnames(train_df_dmy))
+
+# Merge with original dataset
+train_df <- cbind(train_df, train_df_dmy)
+
+# Check if all marital status categories exist
+print(colnames(train_df))
+
+
+sum(is.na(train_df$Marital_))  # Count NAs
+sum(train_df$Marital_ == 0, na.rm = TRUE)  # Count empty strings
 
 
 ```
 
-```{r gamma regression, echo = FALSE}
+```{r, echo =FALSE}
+head(train_df[c("Marital_", "Marital_M", "Marital_S", "Marital_U")])
 
+sum(train_df$Marital_ == 0, na.rm = TRUE)  # Count empty strings
 
-install.packages("devtools")  # Install devtools if not installed
-devtools::install_github("dustinfife/flexplot")
-library(flexplot)
+print(colnames(train_df))
+
+train_df <- train_df[, !names(train_df) %in% c("Marital_")]
+
 
 ```
 
-install.packages("flexplot")  # Run this once if not installed
-library(flexplot)
+```{r, echo =FALSE}
+
+dmy <- dummyVars("~ PartTimeFullTime", data = train_df)
+train_df_dmy <- data.frame(predict(dmy, newdata = train_df))
+
+# Print column names
+print(colnames(train_df_dmy))
+```
+
+```{r, echo =FALSE}
+colnames(train_df_dmy) <- c("FullTime", "PartTime")
+
+# Merge with original dataset
+train_df <- cbind(train_df, train_df_dmy)
+
+print(colnames(train_df))
+
+```
+
+```{r, echo = FALSE}
+
+# Encode Gender (use the same dummyVars model as train_df)
+test_df_dmy <- data.frame(predict(dmy, newdata = test_df))  # Use the `dmy` object from before
+colnames(test_df_dmy) <- c("Gender_Female", "Gender_Male", "Gender_Unknown")
+
+# Merge into test_df
+test_df <- cbind(test_df, test_df_dmy)
+
+# Verify
+print(colnames(test_df))
+
+```
+
+```{r, echo = FALSE}
+
+# Apply dummy encoding for MaritalStatus (using the same method as train_df)
+test_df_dmy <- data.frame(predict(dummyVars("~ MaritalStatus", data = train_df), newdata = test_df))
+
+# Rename columns dynamically
+colnames(test_df_dmy) <- gsub("^MaritalStatus", "Marital_", colnames(test_df_dmy))
+
+# Merge into test_df
+test_df <- cbind(test_df, test_df_dmy)
+
+# Remove unwanted column if it appears
+test_df <- test_df[, !names(test_df) %in% c("Marital_")]
+
+# Check final structure
+print(colnames(test_df))
+
+```
+
+
+```{r, echo = FALSE}
+
+# Apply dummy encoding for PartTimeFullTime
+test_df_dmy <- data.frame(predict(dummyVars("~ PartTimeFullTime", data = train_df), newdata = test_df))
+
+# Rename properly
+colnames(test_df_dmy) <- c("FullTime", "PartTime")
+
+# Merge into test_df
+test_df <- cbind(test_df, test_df_dmy)
+
+test_df <- test_df[, !names(test_df) %in% c("PartTimeFullTimeF")]
+test_df <- test_df[, !names(test_df) %in% c("PartTimeFullTimeP")]
+
+# Check
+print(colnames(test_df))
+
+
+```
+
+```{r, echo = FALSE}
+
+print(setdiff(names(train_df), names(test_df)))  # Columns in train_df but not in test_df
+print(setdiff(names(test_df), names(train_df)))  # Columns in test_df but not in train_df
+
+train_df <- train_df[, !names(train_df) %in% c("ClaimDescription")]
+test_df <- test_df[, !names(test_df) %in% c("ClaimDescription")]
+"ClaimDescription" %in% names(train_df)  # Should return FALSE
+"ClaimDescription" %in% names(test_df)   # Should return FALSE
+
 
 ```
 
 Before fitting the model, visualize the relationships between LossRatio and predictors.
 
-```{r flexplot-univariate, echo=FALSE}
+```{r, eco = FALSE}
+install.packages("ggcorrplot")
+library(ggcorrplot)
 
-flexplot(LossRatio ~ 1, data=train_set)
+# Select only numerical columns
+numeric_features <- train_df[, sapply(train_df, is.numeric)]
+
+# Compute correlation matrix
+cor_matrix <- cor(numeric_features, use = "complete.obs")
+
+ggcorrplot(cor_matrix, method = "circle", type = "lower", lab = TRUE, show.legend = TRUE) +
+  ggtitle("Correlation Matrix of Numerical Features") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotates x-axis labels
+
+
+# Find highly correlated features (threshold > 0.85)
+high_corr_features <- findCorrelation(cor_matrix, cutoff = 0.85, names = TRUE)
+
+# Print correlated features
+print(high_corr_features)
 
 
 ```
 
-```{r flexplot-bivariate, echo=FALSE}
-# Bivariate plot: Loss Ratio vs. Weekly Wages
-flexplot(LossRatio ~ WeeklyWages, data=train_set, method="Gamma", jitter=c(0, 0.2))
+
+```{r remove highly correlated feature, echo = FALSE}
+train_df <- train_df[, !names(train_df) %in% c("WeeklyWages")]
+test_df <- test_df[, !names(test_df) %in% c("WeeklyWages")]
+
+"WeeklyWages" %in% names(train_df)  # Should return FALSE
+"WeeklyWages" %in% names(test_df)   # Should return FALSE
+
+```
+
+Best Practice: Before running Boruta, If can remove highly correlated redundant features to make feature selection more robust.
+
+```{r boruta, echo = FALSE}
+install.packages("Boruta", type = "binary")
+library(Boruta)
+```
+
+
+```{r boruta, echo = FALSE}
+# Remove LossRatio and LossRatio_log from the dataset
+train_df_no_target <- train_df[, !names(train_df) %in% c("LossRatio", "LossRatio_log")]
+
+
+set.seed(42)
+boruta_result <- Boruta(x = train_df_no_target, y = train_df$LossRatio_log, doTrace = 2)
+
+
+```
+
+```{r boruta results, echo = FALSE}
+# Print summary of selected features
+print(boruta_result)
+
+plot(boruta_result, las = 2, cex.axis = 0.7)  
+
+# Get the final selected features
+final_features <- getSelectedAttributes(boruta_result, withTentative = FALSE)
+```
+
+```{r boruta results, echo = FALSE}
+# Save to a CSV file
+write.csv(final_features, "boruta_selected_features.csv", row.names = FALSE)
+
+# Or save as an R object (faster to load later)
+save(final_features, file = "boruta_features.RData")
+
+```
+
+```{r top 7 features, echo = FALSE}
+
+# Extract feature importance scores from Boruta
+importance_scores <- attStats(boruta_result)
+
+# Sort features by importance
+importance_scores <- importance_scores[order(-importance_scores$meanImp), ]
+
+# Select the top 7 features
+top_7_features <- rownames(importance_scores[1:7, ])
+print(top_7_features)
+
+
+```
+
+When running Boruta for eature selection, these parameters help control verbosity(doTrace) and how I handle tentativee features(withTentative). doTrace controls how much information Boruta print while running. This helps with the runtime and understanding information about each feature at every step. Meanwhile, withTentative, helps determine whether I keep or discard the features that are classified under uncertain importance(Tentative). The best practices are to use doTrace =1 to monitor progress without excessive output. Also start with withTentative = False, but run TentativeRoughFix() if keeping more features is needed. 
+
+
+To build a realistic loss-cost model, I must only use features available at the time of pricing or policy issuance.
+Therefore, I will be removing the variables "UltimateIncurredClaimCost" and "InitialIncurredClaimCost".
+
+
+# Load from CSV
+final_features <- read.csv("boruta_selected_features.csv", stringsAsFactors = FALSE)$x
+
+# OR load from RData file (recommended)
+load("boruta_features.RData")
+
+```{r, echo = FALSE}
+top_7_features <- setdiff(top_7_features, c("UltimateIncurredClaimCost", "InitialIncurredCalimsCost"))
+top_7_features <- setdiff(top_7_features, "Marital_U")
+
+```
+
+```{r, echo=FALSE}
+print(top_7_features)
+```
+```{r split-data, echo=FALSE}
+set.seed(42)  # Ensure reproducibility
+library(caret)  # For data splitting
+
+# Remove `LossRatio` and `MaritalStatus` from `train_df` and `test_df`
+train_df <- train_df[, !names(train_df) %in% c("LossRatio", "MaritalStatus")]
+test_df <- test_df[, !names(test_df) %in% c("LossRatio", "MaritalStatus")]
+
+# Define 80% train, 20% validation split
+train_index <- createDataPartition(train_df$LossRatio_log, p=0.8, list=FALSE)
+
+# Create train and validation sets
+train_set <- train_df[train_index, ]
+validation_set <- train_df[-train_index, ]
+
+# Remove `MaritalStatus` from `top_7_features`
+top_7_features <- setdiff(top_7_features, "MaritalStatus")
+
+# Now keep only the top 7 numeric features
+train_df_top7 <- train_set[, c(top_7_features, "LossRatio_log")]
+val_df_top7 <- validation_set[, c(top_7_features, "LossRatio_log")]
+test_df_top7 <- test_df[, top_7_features]  # No target in test set
+
+# Print dataset sizes
+cat("Training Set Size: ", nrow(train_df_top7), "\n")
+cat("Validation Set Size: ", nrow(val_df_top7), "\n")
+cat("Test Set Size: ", nrow(test_df_top7), "\n")
+
+
+```
+
+
+```{r tweedie-model, echo=FALSE}
+#install.packages("statmod")  # Run this once
+install.packages("MASS")     # GLM models
+install.packages("glmnet")   # Regularized models (optional)
+library(statmod)
+library(statmod)  # Required for Tweedie distribution
+library(MASS)     # For GLM
+library(glmnet)   # For potential Lasso/Ridge Tweedie models
+
+
+
+
+```
+
+
+
+```{r, echo=FALSE}
+
+# Train Tweedie regression model
+tweedie_model <- glm(LossRatio_log ~ ., 
+                      data = train_df_top7, 
+                      family = tweedie(var.power = 1.5, link.power = 0))  # 1 < var.power < 2 for insurance data
+
+# Print model summary
+summary(tweedie_model)
+
+
+```
+
+
+```{r, echo=FALSE}
+
+library(car)
+vif(tweedie_model)
+
+library(ggplot2)
+
+coef_df <- as.data.frame(coef(summary(tweedie_model)))
+coef_df$Feature <- rownames(coef_df)
+colnames(coef_df) <- c("Estimate", "StdError", "tValue", "pValue", "Feature")
+
+ggplot(coef_df, aes(x = reorder(Feature, Estimate), y = Estimate)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  ggtitle("Tweedie Model Feature Importance") +
+  theme_minimal()
+
+
+```
+
+All VIF values are < 5, meaning NO severe multicollinearity!
+
+```{r, echo=TRUE}
+
+# Predict on validation set
+val_predictions <- predict(tweedie_model, newdata = val_df_top7, type = "response")
+
+# Compute RMSE
+rmse <- sqrt(mean((val_predictions - val_df_top7$LossRatio_log)^2))
+print(paste("Validation RMSE:", round(rmse, 4)))
+
+
+
+
+```
+
+Validation RMSE: 0.4662
+
+```{r, echo = FALSE}
+
+ggplot(data.frame(Predicted = val_predictions, Actual = val_df_top7$LossRatio_log), 
+       aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  geom_abline(slope = 1, intercept = 0, color = "red") +  
+  theme_minimal() +
+  ggtitle("Predicted vs Actual (Validation Data)")
+
+
+```
+
+The red line (ideal predictions) represents y = x (perfect predictions).
+Most blue points (predictions) are below the red line, meaning the model often underestimates high loss ratios.
+There is a strong clustering near zero, suggesting that the model struggles with high-loss cases.
+
+It is best to check if the model is biased by plotting the residuals. 
+
+```{r, echo = FALSE}
+ggplot(data.frame(Residuals = val_predictions - val_df_top7$LossRatio_log), 
+       aes(x = Residuals)) +
+  geom_histogram(bins = 50, fill = "blue", alpha = 0.6) +
+  theme_minimal() +
+  ggtitle("Residuals Distribution")
+
+```
+
+The residuals are centered around zero meaning it is not baised. 
+The residuals are heavily right-skewed.
+There is a large peak near 0, meaning most predictions are close to the actual values.
+There are some negative residuals, meaning the model over-predicts in certain cases.
+The long tail on the left suggests some extreme errors (outliers).
+
+The model is mostly predicting well, but some large negative residuals exist, meaning it occasionally overestimates losses.
+The distribution is not perfectly normal, but that's expected in loss-cost modeling.
+```{r, echo = FALSE}
+ggplot(data.frame(Predicted = val_predictions, Residuals = val_predictions - val_df_top7$LossRatio_log), 
+       aes(x = Predicted, y = Residuals)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  geom_hline(yintercept = 0, color = "red") +
+  theme_minimal() +
+  ggtitle("Residuals vs. Predictions")
+
+```
+
+The residuals fan out as predictions increase, meaning higher predicted loss ratios have larger errors.
+There is a clear pattern where:
+Low predictions have small residuals.
+High predictions have larger, more spread-out residuals.
+
+Heteroskedasticity is present: The variance of residuals increases with higher predicted values.
+The model is not handling extreme losses well: It struggles to accurately predict high-loss cases, leading to high variance.
+
+
+Log-Transform the variables 
+
+```{r, echo = FALSE}
+train_df_top7$LogEarnedPremiums <- log1p(train_df_top7$EarnedPremiums)
+val_df_top7$LogEarnedPremiums <- log1p(val_df_top7$EarnedPremiums)
+test_df_top7$LogEarnedPremiums <- log1p(test_df_top7$EarnedPremiums)
+
+
+
+```
+
+The model struggles with extreme cases.
+
+```{r, echo = false}
+library(statmod)
+
+# Try different variance powers (1.1 to 1.9)
+for (p in seq(1.1, 1.9, by = 0.2)) {
+    model <- glm(LossRatio_log ~ ., 
+                 data = train_df_top7, 
+                 family = tweedie(var.power = p, link.power = 0))
+    
+    val_preds <- predict(model, val_df_top7, type = "response")
+    rmse <- sqrt(mean((val_preds - val_df_top7$LossRatio_log)^2))
+    
+    print(paste("Tweedie Variance Power:", p, "Validation RMSE:", round(rmse, 4)))
+}
+
+
+```
+
+
+```{r, echo = false}
+tweedie_glm_interaction <- glm(LossRatio_log ~ EarnedPremiums * HoursWorkedPerWeek + Age, 
+                               data = train_df_top7, 
+                               family = tweedie(var.power = 1.1, link.power = 0))
+
+summary(tweedie_glm_interaction)
+
+
+```
+
+
+```{r baseline, echo=false}
+
+library(xgboost)
+
+xgb_model <- xgboost(data = x_train, label = y_train, 
+                     objective = "reg:tweedie", 
+                     tweedie_variance_power = 1.1, 
+                     nrounds = 200)
+
+# Predict on validation set
+xgb_predictions <- predict(xgb_model, x_val)
+
+# Compute RMSE
+rmse_xgb <- sqrt(mean((xgb_predictions - y_val)^2))
+print(paste("XGBoost Tweedie Validation RMSE:", round(rmse_xgb, 4)))
+
+
+```
+
+XGBoost captures nonlinear relationships better than GLMs.
+GLMs assume a specific distribution, but XGBoost can adapt better to real-world loss ratio patterns.
+Regularization in GLM might not be sufficient, while XGBoost fine-tunes feature importance dynamically.
+
+```{r, echo = FALSE}
+library(xgboost)
+
+# Convert data to XGBoost matrix format
+dtrain <- xgb.DMatrix(data = x_train, label = y_train)
+dval <- xgb.DMatrix(data = x_val, label = y_val)
+
+# Set XGBoost parameters
+params <- list(
+  objective = "reg:tweedie",
+  tweedie_variance_power = 1.1,
+  eval_metric = "rmse",
+  eta = 0.05,  # Learning rate
+  max_depth = 5,
+  subsample = 0.8,
+  colsample_bytree = 0.8
+)
+
+# Train model with early stopping
+xgb_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 1000,  # High upper limit, but early stopping will prevent overfitting
+  watchlist = list(val = dval),  # Validation set to monitor performance
+  early_stopping_rounds = 50,  # Stops if no improvement in 50 rounds
+  verbose = 1  # Shows training progress
+)
+
+# Get best number of rounds
+best_nrounds <- xgb_model$best_iteration
+print(paste("Best number of boosting rounds:", best_nrounds))
+
+
+
+```
+
+
+```{r, echo = FALSE}
+
+# Predict using best iteration found by early stopping
+xgb_predictions_tuned <- predict(xgb_model, dval, iteration_range = c(1, best_nrounds))
+
+# Compute RMSE
+rmse_xgb_tuned <- sqrt(mean((xgb_predictions_tuned - y_val)^2))
+print(paste("Tuned XGBoost Tweedie Validation RMSE:", round(rmse_xgb_tuned, 4)))
+
+
+```
+
+
+```{r, echo = FALSE}
+
+importance_matrix <- xgb.importance(model = xgb_model)
+print(importance_matrix)
+
+# Plot importance
+xgb.plot.importance(importance_matrix)
+
 
 ```
 
 ```{r, echo = FALSE}
-summary(train_set$LossRatio)
-hist(train_set$LossRatio, breaks=30, main="Loss Ratio Distribution")
 
-cap_value <- quantile(train_set$LossRatio, 0.99, na.rm=TRUE)
-train_set$LossRatio <- pmin(train_set$LossRatio, cap_value)
-test_df$LossRatio <- pmin(test_df$LossRatio, cap_value)
+# Ensure test_df_top7 has only the top selected features
+x_test <- as.matrix(test_df_top7[, top_7_features])
 
-train_set$WeeklyWages_log <- log1p(train_set$WeeklyWages)
-train_set$ReportDelay_log <- log1p(train_set$ReportDelay)
+dtest <- xgb.DMatrix(data = x_test)
 
-test_df$WeeklyWages_log <- log1p(test_df$WeeklyWages)
-test_df$ReportDelay_log <- log1p(test_df$ReportDelay)
+# Predict on test set using best iteration
+test_predictions <- predict(xgb_model, dtest, iteration_range = c(1, 81))
 
-```
+# Convert back from log-transformed Loss Ratio
+test_predictions <- expm1(test_predictions)  # Inverse of log1p()
 
+# Store predictions
+test_df_top7$Predicted_LossRatio <- test_predictions
 
-```{r gamma-models, echo=FALSE}
-# Full Gamma Model
-full_gamma <- glm(LossRatio ~ WeeklyWages + ReportDelay + AccidentSeason + MaritalStatus + Gender, 
-                  data=train_set, family=Gamma(link="log"))
-
-# Reduced Gamma Model (removing non-significant predictors)
-reduced_gamma <- glm(LossRatio ~ WeeklyWages + ReportDelay, 
-                     data=train_set, family=Gamma(link="log"))
-```
-
-
-
-```{r tweedie-model, echo=FALSE}
-install.packages("statmod")  # Run this once
-library(statmod)
-
-
-# Fit a Tweedie GLM
-tweedie_model <- glm(LossRatio ~ WeeklyWages + ReportDelay + AccidentSeason + MaritalStatus, 
-                     data=train_set, 
-                     family=tweedie(var.power=1.5, link.power=0))
-
-
-summary(tweedie_model)
-
+# View final predictions
+head(test_df_top7$Predicted_LossRatio)
 
 
 ```
